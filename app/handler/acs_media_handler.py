@@ -113,7 +113,7 @@ class ACSMediaHandler:
         # Use async context manager to auto-close the credential
             async with ManagedIdentityCredential(client_id=self.client_id) as credential:
                 token = await credential.get_token(
-                    "https://cognitiveservices.azure.com/.default"
+                    "https://ai.azure.com/.default"
                 )
                 print(token.token)
                 logger.info("[VoiceLiveACSHandler] managed token : %s", token.token)
