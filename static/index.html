@@ -159,6 +159,14 @@
     let mediaStream, source, processor, socket;
     let audioContext = new AudioContext({ sampleRate: 24000 });
     let workletNode;
+    let currentStreamingMsg = null; // Track current streaming AI message
+
+    // Audio-synced transcript variables
+    let transcriptBuffer = ''; // Full transcript text buffer
+    let totalAudioSamples = 0; // Total audio samples for current response
+    let audioStartTime = 0; // When audio playback started
+    let revealAnimationId = null; // Animation frame ID
+    const SAMPLE_RATE = 24000; // Audio sample rate
 
     // Load the AudioWorkletProcessor
     async function loadAudioProcessor() {
@@ -175,10 +183,23 @@
         float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7FFF);
       }
       workletNode.port.postMessage({ pcm: float32 });
+
+      // Track audio samples for sync
+      if (totalAudioSamples === 0) {
+        audioStartTime = performance.now();
+        startRevealAnimation();
+      }
+      totalAudioSamples += float32.length;
     }
 
     function stopPlayback() {
       if (workletNode) workletNode.port.postMessage({ clear: true });
+      // When playback is stopped (user interrupts), show remaining text and reset
+      if (currentStreamingMsg && transcriptBuffer.length > 0) {
+        const textDiv = currentStreamingMsg.querySelector('.text');
+        textDiv.textContent = transcriptBuffer;
+      }
+      resetStreamingState();
     }
 
     function float32ToInt16(float32Array) {
@@ -250,9 +271,11 @@
             console.log("Audio stopped")
             stopPlayback();
           }
-          if (msg.Kind === "Transcription") {
-            console.log("AI Transcript:", msg.Text);
-            displayTranscript(msg.Text, 'AI');
+          if (msg.Kind === "TranscriptDelta") {
+            appendToStreamingTranscript(msg.Text);
+          }
+          if (msg.Kind === "TranscriptDone") {
+            finalizeStreamingTranscript();
           }
           if (msg.Kind === "UserTranscription") {
             console.log("User Transcript:", msg.Text);
@@ -316,10 +339,129 @@
       container.scrollTop = container.scrollHeight;
     }
 
+    // Append text to transcript buffer (audio-synced)
+    function appendToStreamingTranscript(text) {
+      const container = document.getElementById('transcriptContainer');
+
+      // Remove empty placeholder if present
+      const emptyMsg = container.querySelector('.transcript-empty');
+      if (emptyMsg) emptyMsg.remove();
+
+      // Create new message element if none exists
+      if (!currentStreamingMsg) {
+        currentStreamingMsg = document.createElement('div');
+        currentStreamingMsg.className = 'transcript-message';
+
+        const labelDiv = document.createElement('div');
+        labelDiv.className = 'label';
+        labelDiv.textContent = 'AI:';
+
+        const textDiv = document.createElement('div');
+        textDiv.className = 'text';
+        textDiv.textContent = '';
+
+        const timeDiv = document.createElement('div');
+        timeDiv.className = 'time';
+        timeDiv.textContent = new Date().toLocaleTimeString();
+
+        currentStreamingMsg.appendChild(labelDiv);
+        currentStreamingMsg.appendChild(textDiv);
+        currentStreamingMsg.appendChild(timeDiv);
+        container.appendChild(currentStreamingMsg);
+      }
+
+      // Add text to buffer (will be revealed by animation)
+      transcriptBuffer += text;
+    }
+
+    // Start the reveal animation loop
+    function startRevealAnimation() {
+      if (revealAnimationId) return; // Already running
+
+      function updateReveal() {
+        // Stop only if no streaming message exists
+        if (!currentStreamingMsg) {
+          revealAnimationId = null;
+          return;
+        }
+
+        const textDiv = currentStreamingMsg.querySelector('.text');
+
+        // Calculate samples that SHOULD have played by now
+        const elapsed = performance.now() - audioStartTime;
+        const samplesPlayed = (elapsed / 1000) * SAMPLE_RATE;
+
+        // Progress based on samples played vs samples in buffer
+        let progress = totalAudioSamples > 0 ? samplesPlayed / totalAudioSamples : 0;
+        progress = Math.max(0, Math.min(progress, 1)); // Clamp 0-1
+
+        // Only show text if we have transcript
+        if (transcriptBuffer.length > 0) {
+          const charsToShow = Math.floor(transcriptBuffer.length * progress);
+          textDiv.textContent = transcriptBuffer.substring(0, charsToShow);
+
+          // Auto-scroll to bottom
+          const container = document.getElementById('transcriptContainer');
+          container.scrollTop = container.scrollHeight;
+        }
+
+        // Check if audio playback is complete (with small buffer for timing)
+        if (progress >= 1 && transcriptBuffer.length > 0) {
+          // Show all remaining text
+          textDiv.textContent = transcriptBuffer;
+
+          // Reset for next message
+          currentStreamingMsg = null;
+          transcriptBuffer = '';
+          totalAudioSamples = 0;
+          audioStartTime = 0;
+          revealAnimationId = null;
+          return;
+        }
+
+        // Continue animation
+        revealAnimationId = requestAnimationFrame(updateReveal);
+      }
+
+      revealAnimationId = requestAnimationFrame(updateReveal);
+    }
+
+    // Called when TranscriptDone arrives - just marks text complete, animation continues
+    function finalizeStreamingTranscript() {
+      // Don't stop animation or show all text immediately!
+      // The animation will naturally show all text when audio finishes.
+      // This function now only marks that no more text will arrive.
+
+      // If somehow animation isn't running but we have content, start it
+      if (currentStreamingMsg && !revealAnimationId && totalAudioSamples > 0) {
+        startRevealAnimation();
+      }
+    }
+
+    // Called when audio playback is interrupted (StopAudio) or connection closes
+    function resetStreamingState() {
+      if (revealAnimationId) {
+        cancelAnimationFrame(revealAnimationId);
+        revealAnimationId = null;
+      }
+
+      // Show any remaining text before reset
+      if (currentStreamingMsg && transcriptBuffer.length > 0) {
+        const textDiv = currentStreamingMsg.querySelector('.text');
+        textDiv.textContent = transcriptBuffer;
+      }
+
+      currentStreamingMsg = null;
+      transcriptBuffer = '';
+      totalAudioSamples = 0;
+      audioStartTime = 0;
+    }
+
     // Clear transcripts when stopping
     function clearTranscripts() {
       const container = document.getElementById('transcriptContainer');
       container.innerHTML = '<div class="transcript-empty">Transcripts will appear here when you start talking...</div>';
+      resetStreamingState();
     }
 
     // Initialize the audio processor

@@ -274,11 +274,18 @@ class ACSMediaHandler:
                                 json.dumps(response["status_details"], indent=2),
                             )
 
+                    case "response.audio_transcript.delta":
+                        delta_text = event.get("delta", "")
+                        if delta_text:
+                            await self.send_message(
+                                json.dumps({"Kind": "TranscriptDelta", "Text": delta_text})
+                            )
+
                     case "response.audio_transcript.done":
                         transcript = event.get("transcript")
                         logger.info("AI: %s", transcript)
                         await self.send_message(
-                            json.dumps({"Kind": "Transcription", "Text": transcript})
+                            json.dumps({"Kind": "TranscriptDone", "Text": transcript})
                         )
 
                     case "response.audio.delta":
