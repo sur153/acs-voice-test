@@ -76,6 +76,60 @@
       font-size: 0.85rem;
       color: #666;
     }
+
+    .transcript-container {
+      width: 90%;
+      max-width: 600px;
+      height: 250px;
+      margin-top: 1.5rem;
+      background: white;
+      border-radius: 0.5rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      overflow-y: auto;
+      padding: 1rem;
+      text-align: left;
+    }
+
+    .transcript-message {
+      margin-bottom: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 3px solid #0078d4;
+      background: #f8fafc;
+      border-radius: 0 0.25rem 0.25rem 0;
+    }
+
+    .transcript-message .label {
+      font-weight: 600;
+      color: #0078d4;
+      font-size: 0.85rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .transcript-message .text {
+      color: #333;
+      line-height: 1.4;
+    }
+
+    .transcript-message .time {
+      font-size: 0.75rem;
+      color: #888;
+      margin-top: 0.25rem;
+    }
+
+    .transcript-empty {
+      color: #888;
+      font-style: italic;
+      text-align: center;
+      padding: 2rem;
+    }
+
+    .transcript-message.user {
+      border-left-color: #28a745;
+    }
+
+    .transcript-message.user .label {
+      color: #28a745;
+    }
   </style>
 </head>
 <body>
@@ -92,6 +146,10 @@
   </div>
 
   <audio id="ttsPlayer" autoplay></audio>
+
+  <div id="transcriptContainer" class="transcript-container">
+    <div class="transcript-empty">Transcripts will appear here when you start talking...</div>
+  </div>
 
   <footer>
     Powered by Azure Voice Live • Demo Mode
@@ -193,7 +251,12 @@
             stopPlayback();
           }
           if (msg.Kind === "Transcription") {
-            console.log("Transcript:", msg.Text);
+            console.log("AI Transcript:", msg.Text);
+            displayTranscript(msg.Text, 'AI');
+          }
+          if (msg.Kind === "UserTranscription") {
+            console.log("User Transcript:", msg.Text);
+            displayTranscript(msg.Text, 'You');
           }
          }
         else if (event.data instanceof ArrayBuffer) {
@@ -214,9 +277,49 @@
         stopMicrophone();
         document.getElementById("startBtn").disabled = false;
         document.getElementById("stopBtn").disabled = true;
+        clearTranscripts();
       };
 
       socket.onerror = (err) => console.error("WebSocket error", err);
+    }
+
+    // Display transcript in the UI
+    function displayTranscript(text, speaker = 'AI') {
+      const container = document.getElementById('transcriptContainer');
+
+      // Remove empty placeholder if present
+      const emptyMsg = container.querySelector('.transcript-empty');
+      if (emptyMsg) emptyMsg.remove();
+
+      // Create transcript message element
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'transcript-message' + (speaker === 'You' ? ' user' : '');
+
+      const labelDiv = document.createElement('div');
+      labelDiv.className = 'label';
+      labelDiv.textContent = speaker + ':';
+
+      const textDiv = document.createElement('div');
+      textDiv.className = 'text';
+      textDiv.textContent = text;
+
+      const timeDiv = document.createElement('div');
+      timeDiv.className = 'time';
+      timeDiv.textContent = new Date().toLocaleTimeString();
+
+      msgDiv.appendChild(labelDiv);
+      msgDiv.appendChild(textDiv);
+      msgDiv.appendChild(timeDiv);
+      container.appendChild(msgDiv);
+
+      // Auto-scroll to bottom
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Clear transcripts when stopping
+    function clearTranscripts() {
+      const container = document.getElementById('transcriptContainer');
+      container.innerHTML = '<div class="transcript-empty">Transcripts will appear here when you start talking...</div>';
     }
 
     // Initialize the audio processor

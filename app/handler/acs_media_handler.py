@@ -51,6 +51,10 @@ def session_config():
             },
             "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
             "input_audio_echo_cancellation": {"type": "server_echo_cancellation"},
+            "input_audio_transcription": {
+                "model": "whisper-1",
+                "language": "en"
+            },
             "voice": {
                 "name": "en-IN-AartiNeural",
                 "type": "azure-standard",
@@ -233,6 +237,11 @@ class ACSMediaHandler:
                         transcript = event.get("transcript")
                         self._last_transcript = transcript
                         logger.info("[ReceiverLoop] User transcript: %s", transcript)
+                        # Send user transcript to client
+                        if transcript:
+                            await self.send_message(
+                                json.dumps({"Kind": "UserTranscription", "Text": transcript})
+                            )
                         
                         # # Query the knowledge base
                         # response_text = await self.query_knowledge_base(transcript)
