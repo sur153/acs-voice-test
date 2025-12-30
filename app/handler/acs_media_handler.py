@@ -21,32 +21,24 @@ logger = logging.getLogger(__name__)
 
 
 def session_config():
-    """Returns the default session configuration for Voice Live."""
-    # return {
-    #     'type': 'session.update', 
-    #     'session': {
-    #      'modalities': ['text', 'audio'], 
-    #      'turn_detection': {'type': 'azure_semantic_vad'}, 
-    #      'input_audio_noise_reduction': {'type': 'azure_deep_noise_suppression'}, 
-    #      'input_audio_echo_cancellation': {'type': 'server_echo_cancellation'},
-    #     #  'avatar': {'character': 'lisa', 'style': 'casual-sitting'}, 
-    #      'voice': {'name': 'en-US-Ava:DragonHDLatestNeural', 'type': 'azure-standard'}
-    #      }
-    # }
+    """Returns the default session configuration for Voice Live.
+
+    LATENCY OPTIMIZED: Balanced for speed without cutting off words.
+    Original values preserved in comments for rollback if needed.
+    """
     return {
         "type": "session.update",
         "session": {
-            # "instructions": "You are an AI assistant specializing in answering insurance-related queries. Provide accurate and helpful responses based on the provided knowledge base. If the user specifies a policy type or policy ID, retrieve the relevant details from the knowledge base.",
-               "turn_detection": {
+            "turn_detection": {
                 "type": "azure_semantic_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 200,
-                "silence_duration_ms": 200,
-                "remove_filler_words": True,
+                "threshold": 0.5,           # Was 0.3 - higher to avoid false triggers on short words
+                "prefix_padding_ms": 200,   # Was 100 - increased to capture word beginnings
+                "silence_duration_ms": 300, # Was 100 - increased to avoid cutting off words
+                "remove_filler_words": False, # Disabled - was removing parts of valid words
                 "end_of_utterance_detection": {
                     "model": "semantic_detection_v1",
-                    "threshold": 0.03,
-                    "timeout": 1.2,
+                    "threshold": 0.3,       # Was 0.01 - balanced threshold
+                    "timeout": 1.2,         # Was 2 - reduced but not too aggressive
                 },
             },
             "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
@@ -109,20 +101,22 @@ class ACSMediaHandler:
         # headers["Authorization"] = f"Bearer {agent_access_token}"
         # headers = {"Authorization": f"Bearer {agent_access_token}"}
 
-        if self.client_id:
-        # Use async context manager to auto-close the credential
+        # Use API key if available, otherwise try Azure credentials
+        if self.api_key:
+            headers = {"api-key": self.api_key}
+            logger.info("[VoiceLiveACSHandler] Using API key authentication")
+        elif self.client_id:
+            # Use async context manager to auto-close the credential
             async with ManagedIdentityCredential(client_id=self.client_id) as credential:
                 token = await credential.get_token(
                     "https://ai.azure.com/.default"
                 )
-                print(token.token)
-                logger.info("[VoiceLiveACSHandler] managed token : %s", token.token)
+                logger.info("[VoiceLiveACSHandler] Using managed identity authentication")
                 headers = {"Authorization": f"Bearer {token.token}"}
-                logger.info("[VoiceLiveACSHandler] Connected to Voice Live API by managed identity")
         else:
             agent_access_token = (await DefaultAzureCredential().get_token("https://ai.azure.com/.default")).token
             headers = {"Authorization": f"Bearer {agent_access_token}"}
-            # headers = {"api-key": self.api_key}
+            logger.info("[VoiceLiveACSHandler] Using DefaultAzureCredential authentication")
         # Add ping_interval and ping_timeout to prevent timeout errors
 
         # try:
@@ -140,9 +134,14 @@ class ACSMediaHandler:
         # except Exception as e:
         #     logger.info("[VoiceLiveACSHandler] Error connecting to Voice Live API: %s", e)
         #     return
-        logger.info("headers are: %s", headers)
-        self.ws = await websockets.connect(url, additional_headers=headers,ping_interval=30, ping_timeout=60)
-        # logger.info("[VoiceLiveACSHandler] Connected to Voice Live API")
+        logger.info("[VoiceLiveACSHandler] Connecting to URL: %s", url)
+        logger.info("[VoiceLiveACSHandler] Using headers: %s", {k: v[:20] + '...' if len(str(v)) > 20 else v for k, v in headers.items()})
+        try:
+            self.ws = await websockets.connect(url, additional_headers=headers, ping_interval=30, ping_timeout=60)
+            logger.info("[VoiceLiveACSHandler] WebSocket connected successfully")
+        except Exception as e:
+            logger.error("[VoiceLiveACSHandler] Failed to connect: %s", e)
+            raise
        
         await self._send_json(session_config())
         # await self.ws.send_json({
@@ -168,10 +167,9 @@ class ACSMediaHandler:
         )
     
     async def _send_json(self, obj):
-        logger.info("[VoiceLiveACSHandler] Sending JSON: %s", obj)
         """Sends a JSON object over WebSocket."""
         if self.ws:
-            logger.info("[VoiceLiveACSHandler] sent JSON: %s", obj)
+            logger.debug("[VoiceLiveACSHandler] Sending JSON: %s", obj)
             await self.ws.send(json.dumps(obj))
 
     async def _sender_loop(self):
@@ -193,7 +191,8 @@ class ACSMediaHandler:
             async for message in self.ws:
                 event = json.loads(message)
                 event_type = event.get("type")
-                logger.info("[VoiceLiveACSHandler] Received event: %s", event_type)
+                # Use DEBUG for frequent events to reduce I/O overhead
+                logger.debug("[VoiceLiveACSHandler] Received event: %s", event_type)
 
                 match event_type:
                     case "session.created":
@@ -336,38 +335,46 @@ class ACSMediaHandler:
     async def _handle_error_and_restart(self, exc, max_retries: int = 3):
         """Attempt simple recovery on errors: resend session config and 'response.create', then reconnect."""
         logger.error("[VoiceLiveACSHandler] Handling exception and attempting restart: %s", exc)
-        
+
+        # Helper to check if websocket is closed
+        def is_ws_closed():
+            if self.ws is None:
+                return True
+            try:
+                # Try different ways to check if closed (websockets library version compatibility)
+                if hasattr(self.ws, 'closed'):
+                    return self.ws.closed
+                if hasattr(self.ws, 'state'):
+                    return self.ws.state.name == 'CLOSED'
+                return False
+            except:
+                return True
 
         # quick attempts to re-trigger session and response
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info("[VoiceLiveACSHandler] Restart attempt %d/%d", attempt, max_retries)
-                if self.ws is None or self.ws.closed:
+                if is_ws_closed():
                     # reconnect websocket and re-send session config
                     endpoint = self.endpoint.rstrip("/")
-                    model = self.model.strip()
                     agent_name = self.agent_name.strip()
                     project_name = self.foundry_project_name.strip()
                     url = f"{endpoint}/voice-live/realtime?api-version=2025-10-01&x-ms-client-request-id={self._generate_guid()}&agent_name={agent_name}&agent-project-name={project_name}"
                     url = url.replace("https://", "wss://")
-                   
-                    if self.client_id:
-                    # Use async context manager to auto-close the credential
+
+                    # Use API key if available
+                    if self.api_key:
+                        headers = {"api-key": self.api_key}
+                    elif self.client_id:
                         async with ManagedIdentityCredential(client_id=self.client_id) as credential:
-                            token = await credential.get_token(
-                                "https://cognitiveservices.azure.com/.default"
-                            )
-                            print(token.token)
-                            logger.info("[VoiceLiveACSHandler] managed token : %s", token.token)
+                            token = await credential.get_token("https://cognitiveservices.azure.com/.default")
                             headers = {"Authorization": f"Bearer {token.token}"}
-                            logger.info("[VoiceLiveACSHandler] Connected to Voice Live API by managed identity")
                     else:
                         agent_access_token = (await DefaultAzureCredential().get_token("https://ai.azure.com/.default")).token
                         headers = {"Authorization": f"Bearer {agent_access_token}"}
-                    
-                    logger.info("headers are: %s", headers)
-                    self.ws = await websockets.connect(url, additional_headers=headers,ping_interval=30, ping_timeout=60)
-                    # logger.info("[VoiceLiveACSHandler] Connected to Voice Live API")
+
+                    logger.info("[VoiceLiveACSHandler] Reconnecting to: %s", url)
+                    self.ws = await websockets.connect(url, additional_headers=headers, ping_interval=30, ping_timeout=60)
                 
                 await self._send_json(session_config())
                 await self._send_json({"type": "response.create", "response": {"instructions": "Restarting response after an internal error."}})
