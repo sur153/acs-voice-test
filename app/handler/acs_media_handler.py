@@ -37,16 +37,16 @@ def session_config():
         "type": "session.update",
         "session": {
             # "instructions": "You are an AI assistant specializing in answering insurance-related queries. Provide accurate and helpful responses based on the provided knowledge base. If the user specifies a policy type or policy ID, retrieve the relevant details from the knowledge base.",
-               "turn_detection": {
+            "turn_detection": {
                 "type": "azure_semantic_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 200,
-                "silence_duration_ms": 200,
+                "threshold": 0.6,              # Increased: less sensitive to background noise
+                "prefix_padding_ms": 300,      # Increased: captures more speech start
+                "silence_duration_ms": 500,    # Increased: wait longer before responding
                 "remove_filler_words": True,
                 "end_of_utterance_detection": {
                     "model": "semantic_detection_v1",
-                    "threshold": 0.03,
-                    "timeout": 1.2,
+                    "threshold": 0.1,          # Increased: less eager to end utterance
+                    "timeout": 2.5,            # Increased: more time to finish speaking
                 },
             },
             "input_audio_noise_reduction": {"type": "azure_deep_noise_suppression"},
