@@ -18,8 +18,6 @@ from azure.identity.aio import AzureCliCredential, DefaultAzureCredential
 from azure.core.credentials_async import AsyncTokenCredential
 logger = logging.getLogger(__name__)
 
-
-
 def session_config():
     """Returns the default session configuration for Voice Live.
 
