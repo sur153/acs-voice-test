@@ -740,11 +740,20 @@
 
   <script>
     // ============================================
-    // MODE MANAGEMENT
+    // UNIFIED SESSION MANAGEMENT
     // ============================================
+    // Single WebSocket connection shared between chat and voice
+    // This maintains conversation context across mode switches
     let currentMode = 'chat';
     let conversationHistory = []; // Shared across modes
+    let unifiedSocket = null;     // Single WebSocket for both modes
+    let sessionConnected = false;
+    let chatStreamingMessage = null;  // For streaming chat responses
+    let chatStreamBuffer = '';
 
+    // ============================================
+    // MODE MANAGEMENT
+    // ============================================
     function switchMode(mode) {
       const prevMode = currentMode;
       currentMode = mode;
@@ -771,6 +780,105 @@
         } else if (mode === 'agent') {
           simulateAgentQueue();
         }
+
+        // Ensure WebSocket is connected when entering chat or voice mode
+        if ((mode === 'chat' || mode === 'voice') && !sessionConnected) {
+          ensureSessionConnected();
+        }
+      }
+    }
+
+    async function ensureSessionConnected() {
+      if (unifiedSocket && unifiedSocket.readyState === WebSocket.OPEN) {
+        sessionConnected = true;
+        return;
+      }
+
+      // Create unified WebSocket connection
+      const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+      const wsHost = window.location.host;
+      unifiedSocket = new WebSocket(`${wsProtocol}://${wsHost}/web/ws`);
+      unifiedSocket.binaryType = "arraybuffer";
+
+      unifiedSocket.onopen = async () => {
+        console.log("Unified session WebSocket connected");
+        sessionConnected = true;
+        await audioContext.resume();
+
+        // Update UI
+        if (currentMode === 'chat') {
+          addSystemMessage('Connected to AI assistant. You can type or switch to voice anytime.');
+        }
+      };
+
+      unifiedSocket.onmessage = handleUnifiedMessage;
+
+      unifiedSocket.onclose = () => {
+        console.log("Unified session WebSocket closed");
+        sessionConnected = false;
+        document.getElementById("startBtn").disabled = false;
+        document.getElementById("stopBtn").disabled = true;
+        document.getElementById("voiceVisualizer").classList.remove("recording");
+        document.getElementById("voiceStatusText").textContent = "Session ended. Click Start to reconnect.";
+      };
+
+      unifiedSocket.onerror = (err) => {
+        console.error("Unified WebSocket error", err);
+        sessionConnected = false;
+      };
+    }
+
+    function handleUnifiedMessage(event) {
+      // Handle both text (JSON) and binary (audio) messages
+      if (typeof event.data === "string") {
+        const msg = JSON.parse(event.data);
+
+        // Handle different message types
+        switch (msg.Kind) {
+          case "StopAudio":
+            stopPlayback();
+            break;
+
+          case "TranscriptDelta":
+            // Streaming text from AI - works for both chat and voice
+            if (currentMode === 'chat') {
+              appendToChatStream(msg.Text);
+            } else {
+              appendToStreamingTranscript(msg.Text);
+            }
+            break;
+
+          case "TranscriptDone":
+            // Final transcript - finalize the message
+            if (currentMode === 'chat') {
+              finalizeChatStream();
+            } else {
+              finalizeStreamingTranscript();
+            }
+            break;
+
+          case "UserTranscription":
+            // User's speech transcribed (voice mode)
+            displayTranscript(msg.Text, 'You');
+            conversationHistory.push({ role: 'user', content: msg.Text, mode: 'voice' });
+            break;
+
+          case "Pong":
+            // Keep-alive response
+            break;
+
+          default:
+            console.log("Unhandled message:", msg);
+        }
+      } else if (event.data instanceof ArrayBuffer) {
+        // Binary audio data - play it (voice mode)
+        if (currentMode === 'voice') {
+          try {
+            playAudio(event.data);
+          } catch (e) {
+            console.error("Failed to decode audio:", e);
+          }
+        }
       }
     }
 
@@ -788,11 +896,11 @@
     }
 
     // ============================================
-    // CHAT MODE
+    // CHAT MODE - Using WebSocket for streaming
     // ============================================
     let chatMessageCount = 0;
 
-    function sendChatMessage() {
+    async function sendChatMessage() {
       const input = document.getElementById('textInput');
       const text = input.value.trim();
       if (!text) return;
@@ -802,12 +910,75 @@
       input.style.height = 'auto';
       chatMessageCount++;
 
-      // Simulate AI response
-      showTypingIndicator();
-      setTimeout(() => {
-        hideTypingIndicator();
-        processChatInput(text);
-      }, 1000 + Math.random() * 1000);
+      // Handle special commands locally
+      const lowerText = text.toLowerCase();
+      if (lowerText.includes('agent') || lowerText.includes('human') || lowerText.includes('person')) {
+        addChatMessage(`Of course! Let me connect you with a human agent.`);
+        setTimeout(() => switchMode('agent'), 1500);
+        return;
+      }
+      if (lowerText.includes('voice') || lowerText.includes('call') || lowerText.includes('speak')) {
+        addChatMessage(`Switching you to voice mode. You can speak naturally.`);
+        setTimeout(() => switchMode('voice'), 1500);
+        return;
+      }
+
+      // Ensure connection and send via WebSocket
+      await ensureSessionConnected();
+
+      if (unifiedSocket && unifiedSocket.readyState === WebSocket.OPEN) {
+        showTypingIndicator();
+        // Send text message over WebSocket
+        unifiedSocket.send(JSON.stringify({
+          type: "text_input",
+          text: text
+        }));
+        // Store in history
+        conversationHistory.push({ role: 'user', content: text, mode: 'chat' });
+      } else {
+        addChatMessage('Connection lost. Please refresh the page to reconnect.');
+      }
+    }
+
+    function appendToChatStream(text) {
+      hideTypingIndicator();
+
+      const conversation = document.getElementById('chatConversation');
+
+      // Create streaming message element if needed
+      if (!chatStreamingMessage) {
+        chatStreamingMessage = document.createElement('div');
+        chatStreamingMessage.className = 'message ai';
+        chatStreamingMessage.id = 'chatStreamingMsg';
+        chatStreamingMessage.innerHTML = `
+          <div class="message-bubble"></div>
+          <div class="message-meta">AI Assistant</div>
+        `;
+        conversation.appendChild(chatStreamingMessage);
+      }
+
+      // Append text to buffer and update display
+      chatStreamBuffer += text;
+      const bubble = chatStreamingMessage.querySelector('.message-bubble');
+      bubble.textContent = chatStreamBuffer;
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+
+    function finalizeChatStream() {
+      hideTypingIndicator();
+
+      if (chatStreamBuffer) {
+        // Store in history
+        conversationHistory.push({ role: 'ai', content: chatStreamBuffer, mode: 'chat' });
+
+        // Update progress
+        const newProgress = Math.min(100, 15 + (chatMessageCount * 5));
+        updateProgress(newProgress);
+      }
+
+      // Reset streaming state
+      chatStreamingMessage = null;
+      chatStreamBuffer = '';
     }
 
     function addChatMessage(text, isUser = false) {
@@ -829,12 +1000,16 @@
       conversation.appendChild(messageDiv);
       conversation.scrollTop = conversation.scrollHeight;
 
-      // Store in history
-      conversationHistory.push({ role: isUser ? 'user' : 'ai', content: text, mode: 'chat' });
+      // Store in history (only for non-user messages added this way)
+      if (!isUser) {
+        conversationHistory.push({ role: 'ai', content: text, mode: 'chat' });
+      }
     }
 
     function showTypingIndicator() {
       const conversation = document.getElementById('chatConversation');
+      if (document.getElementById('chatTypingIndicator')) return;
+
       const typing = document.createElement('div');
       typing.className = 'message ai';
       typing.id = 'chatTypingIndicator';
@@ -852,40 +1027,6 @@
     function hideTypingIndicator() {
       const typing = document.getElementById('chatTypingIndicator');
       if (typing) typing.remove();
-    }
-
-    function processChatInput(text) {
-      const lowerText = text.toLowerCase();
-
-      // Demo responses
-      if (chatMessageCount === 1) {
-        addChatMessage(`Thank you! I've recorded your name. Now let's continue with some health questions.`);
-        setTimeout(() => {
-          addChatMessage(`Have you been diagnosed with or treated for high blood pressure in the past 5 years?`);
-        }, 800);
-        updateProgress(25);
-      } else if (lowerText.includes('yes') && chatMessageCount === 2) {
-        addChatMessage(`I understand. For blood pressure conditions, I have a few more detailed questions.`);
-        setTimeout(() => {
-          addChatMessage(`This might be easier to discuss by voice. Would you like to switch to voice mode? You can click the Voice tab above or just keep typing.`);
-        }, 800);
-        updateProgress(35);
-      } else if (lowerText.includes('no') && chatMessageCount === 2) {
-        addChatMessage(`Great, thank you for confirming.`);
-        setTimeout(() => {
-          addChatMessage(`Have you been diagnosed with diabetes (Type 1 or Type 2)?`);
-        }, 800);
-        updateProgress(35);
-      } else if (lowerText.includes('agent') || lowerText.includes('human') || lowerText.includes('person')) {
-        addChatMessage(`Of course! Let me connect you with a human agent.`);
-        setTimeout(() => switchMode('agent'), 1500);
-      } else if (lowerText.includes('voice') || lowerText.includes('call') || lowerText.includes('speak')) {
-        addChatMessage(`Switching you to voice mode. You can speak naturally.`);
-        setTimeout(() => switchMode('voice'), 1500);
-      } else {
-        addChatMessage(`Thank you for that information. Let me continue with the next question.`);
-        updateProgress(Math.min(100, parseInt(document.getElementById('progressText').textContent) + 5));
-      }
     }
 
     function handleKeyDown(event) {
@@ -911,9 +1052,10 @@
     });
 
     // ============================================
-    // VOICE MODE (Preserved from original)
+    // VOICE MODE - Using same WebSocket
     // ============================================
-    let mediaStream, source, processor, socket;
+    let mediaStream, source, processor;
+    let socket = null;  // Alias for unifiedSocket in voice mode
     let audioContext = new AudioContext({ sampleRate: 24000 });
     let workletNode;
     let currentStreamingMsg = null;
@@ -998,67 +1140,41 @@
     }
 
     function stopStreaming() {
-      if (socket) socket.close();
+      // Only stop the microphone, keep WebSocket open for session continuity
+      stopMicrophone();
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
+      document.getElementById("voiceVisualizer").classList.remove("recording");
+      document.getElementById("voiceStatusText").textContent = "Paused. Click Start to continue talking.";
     }
 
     function toggleVoice() {
-      if (socket && socket.readyState === WebSocket.OPEN) {
+      if (mediaStream) {
+        // Microphone is active, stop it
         stopStreaming();
       } else {
+        // Start microphone
         startStreaming();
       }
     }
 
-    function startStreaming() {
-      let wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-      let wsHost = window.location.host;
-      socket = new WebSocket(`${wsProtocol}://${wsHost}/web/ws`);
-      socket.binaryType = "arraybuffer";
+    async function startStreaming() {
+      // Use the unified socket, ensure it's connected
+      await ensureSessionConnected();
+      socket = unifiedSocket;  // Use unified socket for voice
 
-      socket.onopen = async () => {
-        console.log("WebSocket opened");
-        await audioContext.resume();
-        await startMicrophone();
-        document.getElementById("startBtn").disabled = true;
-        document.getElementById("stopBtn").disabled = false;
-        document.getElementById("voiceVisualizer").classList.add("recording");
-        document.getElementById("voiceStatusText").textContent = "Listening... speak now";
-      };
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        document.getElementById("voiceStatusText").textContent = "Connecting...";
+        return;
+      }
 
-      socket.onmessage = async (event) => {
-        if (typeof event.data === "string") {
-          const msg = JSON.parse(event.data);
-          if (msg.Kind === "StopAudio") {
-            stopPlayback();
-          }
-          if (msg.Kind === "TranscriptDelta") {
-            appendToStreamingTranscript(msg.Text);
-          }
-          if (msg.Kind === "TranscriptDone") {
-            finalizeStreamingTranscript();
-          }
-          if (msg.Kind === "UserTranscription") {
-            displayTranscript(msg.Text, 'You');
-            // Also add to chat history for context
-            conversationHistory.push({ role: 'user', content: msg.Text, mode: 'voice' });
-          }
-        } else if (event.data instanceof ArrayBuffer) {
-          try {
-            playAudio(event.data);
-          } catch (e) {
-            console.error("Failed to decode audio:", e);
-          }
-        }
-      };
-
-      socket.onclose = () => {
-        console.log("WebSocket closed");
-        stopMicrophone();
-        document.getElementById("startBtn").disabled = false;
-        document.getElementById("stopBtn").disabled = true;
-        document.getElementById("voiceVisualizer").classList.remove("recording");
-        document.getElementById("voiceStatusText").textContent = "Click Start Talking to begin";
-      };
+      // Start the microphone
+      await audioContext.resume();
+      await startMicrophone();
+      document.getElementById("startBtn").disabled = true;
+      document.getElementById("stopBtn").disabled = false;
+      document.getElementById("voiceVisualizer").classList.add("recording");
+      document.getElementById("voiceStatusText").textContent = "Listening... speak now";
 
       socket.onerror = (err) => console.error("WebSocket error", err);
     }

@@ -1,5 +1,23 @@
-# Overview
+# ACS Voice Test - Voice Application
+
+## Overview
+Voice I/O application for the ProtectiveTeleLife questionnaire system. Handles WebSocket connections, audio streaming, and web UI for voice conversations with Azure AI agents.
+
+**Related Repository**: [acs-agent](https://github.com/sur153/acs-agent) - Contains the AI agent configuration (instructions, tools, behavior)
+
+**Full Architecture Documentation**: See `/Users/user/Python Projects/ProtectiveTeleLife/PROJECT_ARCHITECTURE.md`
+
+---
+
 This project is managed using `pyproject.toml` and the [`uv`](https://github.com/astral-sh/uv) package manager for fast Python dependency management.
+
+## Current Features
+- ✅ Real-time voice conversations with Azure Voice Live
+- ✅ Real-time transcript display (user + AI)
+- ✅ Streaming transcripts with audio-synced reveal
+- ✅ WebSocket audio streaming (24kHz PCM)
+- ✅ Browser-based voice interface
+- ✅ Phone call support via Azure Communication Services
 
 ## 1. Test with Web Client
 

@@ -75,6 +75,7 @@ class ACSMediaHandler:
         self.incoming_websocket = None
         self.is_raw_audio = True
         self._last_transcript = None
+        self._response_in_progress = False  # Track if agent is currently responding
 
     def _generate_guid(self):
         return str(uuid.uuid4())
@@ -202,6 +203,11 @@ class ACSMediaHandler:
                     case "session.created":
                         session_id = event.get("session", {}).get("id")
                         logger.info("[VoiceLiveACSHandler] Session ID: %s", session_id)
+                        self._response_in_progress = False
+
+                    case "response.created":
+                        self._response_in_progress = True
+                        logger.debug("[VoiceLiveACSHandler] Response started")
 
                     case "input_audio_buffer.cleared":
                         logger.info("Input Audio Buffer Cleared Message")
@@ -265,6 +271,7 @@ class ACSMediaHandler:
                         #  delete the agent
 
                     case "response.done":
+                        self._response_in_progress = False
                         response = event.get("response", {})
                         logger.info("Response Done: Id=%s", response.get("id"))
                         if response.get("status_details"):
@@ -285,6 +292,21 @@ class ACSMediaHandler:
                         logger.info("AI: %s", transcript)
                         await self.send_message(
                             json.dumps({"Kind": "TranscriptDone", "Text": transcript})
+                        )
+
+                    # Text-only responses (for chat mode with modalities: ["text"])
+                    case "response.text.delta":
+                        delta_text = event.get("delta", "")
+                        if delta_text:
+                            await self.send_message(
+                                json.dumps({"Kind": "TranscriptDelta", "Text": delta_text})
+                            )
+
+                    case "response.text.done":
+                        text = event.get("text", "")
+                        logger.info("AI (text): %s", text[:100] if text else "")
+                        await self.send_message(
+                            json.dumps({"Kind": "TranscriptDone", "Text": text})
                         )
 
                     case "response.audio.delta":
@@ -343,10 +365,74 @@ class ACSMediaHandler:
         except Exception:
             logger.exception("[VoiceLiveACSHandler] Error processing ACS audio")
 
-    async def web_to_voicelive(self, audio_bytes):
-        """Encodes raw audio bytes and sends to Voice Live API."""
-        audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-        await self.audio_to_voicelive(audio_b64)
+    async def web_to_voicelive(self, message):
+        """Handles incoming WebSocket messages from web client.
+
+        Supports both:
+        - Binary audio data (for voice mode)
+        - JSON text messages (for chat mode)
+        """
+        # Check if it's binary audio data or JSON text message
+        if isinstance(message, bytes):
+            # Binary audio - encode and send to Voice Live
+            audio_b64 = base64.b64encode(message).decode("ascii")
+            await self.audio_to_voicelive(audio_b64)
+        elif isinstance(message, str):
+            # JSON message - parse and handle
+            try:
+                data = json.loads(message)
+                msg_type = data.get("type")
+
+                if msg_type == "text_input":
+                    # Text chat message - send via conversation.item.create
+                    text = data.get("text", "")
+                    if text:
+                        await self.send_text_message(text)
+                elif msg_type == "ping":
+                    # Keep-alive ping
+                    await self.send_message(json.dumps({"Kind": "Pong"}))
+                else:
+                    logger.warning("[VoiceLiveACSHandler] Unknown message type: %s", msg_type)
+            except json.JSONDecodeError:
+                logger.warning("[VoiceLiveACSHandler] Invalid JSON message: %s", message[:100])
+
+    async def send_text_message(self, text: str):
+        """Sends a text message to Voice Live API using conversation.item.create.
+
+        This allows text input in the same session as voice, maintaining context.
+        """
+        logger.info("[VoiceLiveACSHandler] Sending text message: %s", text[:50])
+
+        # Cancel any active response before sending new input
+        if self._response_in_progress:
+            logger.info("[VoiceLiveACSHandler] Canceling active response before new text input")
+            await self._send_json({"type": "response.cancel"})
+            # Brief delay to allow cancel to process
+            await asyncio.sleep(0.1)
+            self._response_in_progress = False
+
+        # Create conversation item with text input
+        await self._send_json({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": text
+                    }
+                ]
+            }
+        })
+
+        # Trigger response generation (text only, no audio needed for chat)
+        await self._send_json({
+            "type": "response.create",
+            "response": {
+                "modalities": ["text"]  # Text only for chat mode
+            }
+        })
 
     async def _handle_error_and_restart(self, exc, max_retries: int = 3):
         """Attempt simple recovery on errors: resend session config and 'response.create', then reconnect."""
