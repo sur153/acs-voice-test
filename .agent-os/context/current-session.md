@@ -62,16 +62,47 @@ feature/chat-voice-agent (main) @ a9fc468
         └── static/index.original.html (backup)
 ```
 
+## Unified Session Implementation (Jan 9, 2026)
+
+### Completed
+- [x] Created `app/handler/chat_handler.py` - Azure OpenAI text API (fallback)
+- [x] Added `/api/chat` REST endpoint to `server.py`
+- [x] **Unified WebSocket session** - Chat and Voice share same connection
+- [x] Text input via Voice Live API `conversation.item.create`
+- [x] Response state tracking to prevent "active response" conflicts
+- [x] Handle `response.text.delta/done` for text-only responses
+- [x] Streaming text display in chat mode
+- [x] Session context preserved across mode switches
+- [x] Tested seamless voice-to-chat and chat-to-voice transitions
+
+### Architecture
+```
+Unified Session (Single WebSocket):
+┌─────────────────────────────────────────────────────────┐
+│  Frontend (index.html)                                  │
+│  ├── Chat Mode: sends {type: "text_input", text: "..."}│
+│  └── Voice Mode: sends binary audio data               │
+└────────────────────┬────────────────────────────────────┘
+                     │ WebSocket /web/ws
+┌────────────────────▼────────────────────────────────────┐
+│  ACSMediaHandler                                        │
+│  ├── Binary → audio_to_voicelive()                     │
+│  └── JSON text_input → send_text_message()             │
+│      └── conversation.item.create + response.create    │
+└────────────────────┬────────────────────────────────────┘
+                     │ WebSocket (Voice Live API)
+┌────────────────────▼────────────────────────────────────┐
+│  Azure AI Foundry Agent (my-voic-agent-poc)            │
+│  Same agent, same context, same conversation           │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Next Steps
 
-1. **TEST:** Run the application and verify:
-   - Chat mode works (type messages, see responses)
-   - Voice mode works (WebSocket connects, audio plays)
-   - Agent mode works (queue simulation runs)
-   - Mode switching preserves context
+1. **FULL TESTING:** Complete end-to-end testing before PR
 2. **REVIEW:** Check mobile responsiveness
 3. **CLEANUP:** Remove mockup files after verification
-4. **MERGE:** If approved, merge to main branches
+4. **PR:** Create pull request after testing
 
 ## Files to Clean Up (After Verification)
 
