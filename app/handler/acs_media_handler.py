@@ -7,7 +7,6 @@ import logging
 import sys
 import uuid
 import urllib.parse
-
 from azure.identity.aio import ManagedIdentityCredential
 import websockets
 from websockets.asyncio.client import connect as ws_connect
