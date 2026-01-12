@@ -4,8 +4,9 @@ import os
 
 from app.handler.acs_event_handler import AcsEventHandler
 from app.handler.acs_media_handler import ACSMediaHandler
+from app.handler.chat_handler import ChatHandler
 from dotenv import load_dotenv
-from quart import Quart, request, websocket
+from quart import Quart, request, websocket, jsonify
 
 load_dotenv()
 
@@ -32,6 +33,7 @@ logging.basicConfig(
 )
 
 acs_handler = AcsEventHandler(app.config)
+chat_handler = ChatHandler(app.config)
 
 
 @app.route("/acs/incomingcall", methods=["POST"])
@@ -86,6 +88,44 @@ async def web_ws():
 async def index():
     """Serves the static index page."""
     return await app.send_static_file("index.html")
+
+
+@app.route("/api/chat", methods=["POST"])
+async def chat_api():
+    """REST endpoint for text chat - completely separate from voice WebSocket.
+
+    Request body:
+        {
+            "message": "user's message",
+            "history": [{"role": "user/assistant", "content": "..."}]  # optional
+        }
+
+    Response:
+        {
+            "response": "assistant's reply",
+            "status": "success/error"
+        }
+    """
+    logger = logging.getLogger("chat_api")
+    try:
+        data = await request.get_json()
+        message = data.get("message", "")
+        history = data.get("history", [])
+
+        if not message.strip():
+            return jsonify({"response": "", "status": "error", "error": "Empty message"}), 400
+
+        logger.info(f"Chat request: {message[:50]}...")
+        result = await chat_handler.get_response(message, history)
+        return jsonify(result)
+
+    except Exception as e:
+        logger.exception(f"Error in chat endpoint: {e}")
+        return jsonify({
+            "response": "Sorry, something went wrong. Please try again.",
+            "status": "error",
+            "error": str(e)
+        }), 500
 
 
 if __name__ == "__main__":
