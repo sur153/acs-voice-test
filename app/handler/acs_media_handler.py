@@ -73,6 +73,7 @@ class ACSMediaHandler:
         self.is_raw_audio = True
         self._last_transcript = None
         self._response_in_progress = False  # Track if agent is currently responding
+        self._session_ready = False  # Track if Voice Live session is ready
 
     def _generate_guid(self):
         return str(uuid.uuid4())
@@ -201,6 +202,10 @@ class ACSMediaHandler:
                         session_id = event.get("session", {}).get("id")
                         logger.info("[VoiceLiveACSHandler] Session ID: %s", session_id)
                         self._response_in_progress = False
+                        # Mark session as ready - AI introduction will be triggered
+                        # by the frontend when user clicks "Start Application"
+                        self._session_ready = True
+                        logger.info("[VoiceLiveACSHandler] Session ready - waiting for client session_start")
 
                     case "response.created":
                         self._response_in_progress = True
@@ -389,6 +394,10 @@ class ACSMediaHandler:
                     text = data.get("text", "")
                     if text:
                         await self.send_text_message(text)
+                elif msg_type == "session_start":
+                    # Session start trigger - AI introduces itself via voice
+                    logger.info("[VoiceLiveACSHandler] Session start - triggering AI introduction")
+                    await self.trigger_ai_introduction()
                 elif msg_type == "ping":
                     # Keep-alive ping
                     await self.send_message(json.dumps({"Kind": "Pong"}))
@@ -396,6 +405,56 @@ class ACSMediaHandler:
                     logger.warning("[VoiceLiveACSHandler] Unknown message type: %s", msg_type)
             except json.JSONDecodeError:
                 logger.warning("[VoiceLiveACSHandler] Invalid JSON message: %s", message[:100])
+
+    async def trigger_ai_introduction(self):
+        """Triggers the AI to introduce itself at the start of a session.
+
+        For Agent service, we can't override instructions in response.create.
+        Instead, we send a conversation item to prompt the AI to introduce itself.
+        """
+        # Wait for session to be ready (with timeout)
+        if not self._session_ready:
+            logger.info("[VoiceLiveACSHandler] Waiting for Voice Live session to be ready...")
+            for _ in range(50):  # Wait up to 5 seconds
+                if self._session_ready:
+                    break
+                await asyncio.sleep(0.1)
+
+            if not self._session_ready:
+                logger.warning("[VoiceLiveACSHandler] Session not ready after timeout, aborting introduction")
+                return
+
+        logger.info("[VoiceLiveACSHandler] Triggering AI introduction")
+
+        # Cancel any active response first
+        if self._response_in_progress:
+            await self._send_json({"type": "response.cancel"})
+            await asyncio.sleep(0.1)
+            self._response_in_progress = False
+
+        # Create a conversation item to prompt the AI to introduce itself
+        # This simulates the start of conversation without custom instructions
+        await self._send_json({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "Hello, I'm ready to start my insurance application."
+                    }
+                ]
+            }
+        })
+
+        # Trigger response generation with audio
+        await self._send_json({
+            "type": "response.create",
+            "response": {
+                "modalities": ["text", "audio"]
+            }
+        })
 
     async def send_text_message(self, text: str):
         """Sends a text message to Voice Live API using conversation.item.create.
