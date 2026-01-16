@@ -90,12 +90,15 @@ export type VoiceStatus =
 // Conversation
 // =============================================================================
 
+export type InputMethod = 'chat' | 'voice';
+
 export interface Message {
   id: string;
   role: 'user' | 'ai' | 'system';
   content: string;
   timestamp: Date;
   mode: InteractionMode;
+  inputMethod?: InputMethod; // How the message was sent (chat or voice)
   isStreaming?: boolean;
 }
 

@@ -1,87 +1,120 @@
 # Current Session State
 
-**Updated:** 2026-01-13
-**Branch:** feature/chat-voice-agent
+**Updated:** 2026-01-16
+**Branch:** feature/unified-chat-voice-ui
 
 ## Active Feature
 
-**React UI Migration** - COMPLETED
+**Unified Chat/Voice UI with Auto-Start Voice** - IN PROGRESS
 
-## Completed This Session
+### Completed Work This Session
 
-- [x] Analyzed backend WebSocket protocol (acs_media_handler.py)
-- [x] Identified voice audio implementation gap in React UI
-- [x] Created useAudio hook for AudioWorklet playback
-- [x] Created useMicrophone hook for audio capture
-- [x] Copied audio-processor.js to public folder
-- [x] Integrated audio into VoiceMode component
-- [x] Configured Vite for production build (base: /static/)
-- [x] Created .env.production
-- [x] Created backup (index.vanilla-backup.html)
-- [x] Created rollback.sh script
-- [x] Created git tag: pre-react-migration
-- [x] Built and deployed React UI to acs-voice-test/static/
+1. **Landing Screen** - "Ready to Begin" screen before session starts
+   - `react-ui/src/components/Landing/LandingScreen.tsx` (NEW)
+   - Large purple mic icon, "Start Application" button
 
-## Deployment Summary
+2. **Purple Protective Branding** - Updated all UI to purple theme
+   - CSS variables: `--primary-purple`, `--primary-purple-gradient`
+   - All buttons, highlights, avatars now purple
 
-**Files Created:**
-- `react-ui/src/hooks/useAudio.ts` - AudioWorklet playback
-- `react-ui/src/hooks/useMicrophone.ts` - Microphone capture
-- `react-ui/src/hooks/index.ts` - Hook exports
-- `react-ui/public/audio-processor.js` - AudioWorklet module
-- `react-ui/.env.production` - Production env vars
-- `acs-voice-test/static/rollback.sh` - Quick rollback script
-- `acs-voice-test/static/index.vanilla-backup.html` - Backup of original
+3. **AI Assistant Branding** - Renamed bot from "Sarah"
+   - AI badge avatar instead of robot emoji
+   - Welcome text: "Hi, I'm your AI Assistant"
 
-**Files Modified:**
-- `react-ui/vite.config.ts` - Build output and base path
-- `react-ui/src/components/Voice/VoiceMode.tsx` - Audio integration
-- `react-ui/src/services/mockWebSocket.ts` - Added readyState property
-- `acs-voice-test/static/index.html` - Now React build
+4. **Auto-Start Voice Mode** - Voice activates on "Start Application"
+   - `SessionContext.tsx`: Added `sessionStarted`, `startSession()`, `sendSessionStart()`
+   - `ConversationMode.tsx`: Auto-starts mic + sends session_start trigger
+   - Default mode is now 'voice' instead of 'chat'
 
-**Build Output:**
-- `acs-voice-test/static/index.html` - React entry point
-- `acs-voice-test/static/assets/` - JS and CSS bundles
-- `acs-voice-test/static/audio-processor.js` - AudioWorklet
+5. **Backend Changes** - AI introduction trigger
+   - `acs-voice-test/app/handler/acs_media_handler.py`:
+     - Added `session_start` message handler
+     - Added `trigger_ai_introduction()` method
+     - Auto-triggers intro on `session.created` event
+
+## Current Issue - DEBUGGING
+
+**Problem:** AI is not introducing itself automatically when session starts
+- Screen shows "AI Assistant is connecting..." indefinitely
+- Voice mode activates (red dot visible, "Ready to listen")
+- But no AI response comes back
+- User voice also not being processed
+
+**Possible Causes:**
+1. Backend not receiving session.created from Azure Voice Live
+2. trigger_ai_introduction() not sending correctly
+3. WebSocket connection issue between frontend and backend
+4. Azure Voice Live API connection failing
+
+**Debug Steps Needed:**
+1. Check server terminal logs for:
+   - `[VoiceLiveACSHandler] Session ID: ...`
+   - `[VoiceLiveACSHandler] Session ready - triggering AI introduction`
+2. Check browser console for WebSocket errors
+3. Verify server was restarted after backend changes
+
+## Files Modified This Session
+
+### Frontend (react-ui/)
+- `src/App.tsx` - Landing screen conditional
+- `src/contexts/SessionContext.tsx` - sessionStarted, startSession, sendSessionStart
+- `src/components/Landing/LandingScreen.tsx` (NEW)
+- `src/components/Landing/index.ts` (NEW)
+- `src/components/Conversation/ConversationMode.tsx` - Auto-start voice effect
+- `src/components/Conversation/ModeToggle.tsx` - Toggle track click handler
+- `src/components/Conversation/UnifiedMessageList.tsx` - AI badge, waiting state
+- `src/styles/global.css` - Purple theme, landing screen styles
+
+### Backend (acs-voice-test/)
+- `app/handler/acs_media_handler.py`:
+  - Added `trigger_ai_introduction()` method
+  - Added `session_start` handler in `web_to_voicelive()`
+  - Auto-trigger intro on `session.created`
+
+## Expected Flow
+
+```
+1. User clicks "Start Application"
+2. sessionStarted = true, mode = 'voice'
+3. Frontend: initAudio(), startMicrophone()
+4. Frontend sends session_start (backup trigger)
+5. Backend: Voice Live connection established
+6. Backend receives session.created
+7. Backend calls trigger_ai_introduction()
+8. AI speaks intro via voice
+9. Frontend receives TranscriptDone + audio
+10. User sees/hears AI introduction
+```
+
+## Next Steps
+
+1. Debug why AI intro not triggering
+2. Check server logs for session.created
+3. Verify Azure Voice Live connection
+4. Test voice input/output after intro works
 
 ## Rollback Instructions
 
 ```bash
-# Quick rollback (instant)
-cd acs-voice-test/static
-./rollback.sh
+# Frontend changes
+cd react-ui && git checkout -- .
 
-# Or manually
-cp index.vanilla-backup.html index.html
+# Backend changes
+cd acs-voice-test && git checkout -- app/handler/acs_media_handler.py
 
-# Git rollback
-git checkout pre-react-migration -- acs-voice-test/static/index.html
+# Or full rollback to main
+git checkout main
 ```
 
-## Testing Instructions
+## Key Commands
 
-1. Start the backend:
-   ```bash
-   cd acs-voice-test
-   source .venv/bin/activate
-   python server.py
-   ```
+```bash
+# Rebuild frontend
+cd react-ui && npm run build
 
-2. Open http://localhost:8000
+# Start backend server
+cd acs-voice-test && python server.py
 
-3. Test each mode:
-   - **Chat:** Send a message, verify streaming response
-   - **Voice:** Click Start Talking, speak, verify AI responds
-   - **Agent:** Check queue simulation works
-
-## Session Recovery
-
-If context is lost:
-1. Read this file for state
-2. Check plan file: `~/.claude/plans/sequential-honking-hedgehog.md`
-3. The React UI is deployed - verify with backend testing
-
----
-
-**Previous Session:** Created React UI project with mock service
-**This Session:** Implemented voice audio, built, and deployed
+# Or with uvicorn
+python -m uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```

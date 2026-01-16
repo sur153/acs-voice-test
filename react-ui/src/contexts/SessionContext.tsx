@@ -34,9 +34,14 @@ interface SessionContextValue {
   connect: () => void;
   disconnect: () => void;
 
+  // Session lifecycle
+  sessionStarted: boolean;
+  startSession: () => void;
+
   // Messaging
   sendTextMessage: (text: string) => void;
   sendAudioData: (data: ArrayBuffer) => void;
+  sendSessionStart: () => void;
 
   // State
   voiceStatus: VoiceStatus;
@@ -70,6 +75,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
   const reconnectAttempts = useRef(0);
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout>>();
 
+  // Session lifecycle state
+  const [sessionStarted, setSessionStarted] = useState(false);
+
   // Voice state
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
   const [currentMode, setCurrentMode] = useState<InteractionMode>('chat');
@@ -102,10 +110,13 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
     // Handle binary audio data
     if (event.data instanceof ArrayBuffer) {
-      console.log('[Session] Received binary audio data, mode:', mode, 'size:', event.data.byteLength);
-      if (mode === 'voice') {
-        setVoiceStatus('ai_speaking');
+      console.log('[Session] Received binary audio data, mode:', mode, 'size:', event.data.byteLength, 'callbacks:', audioCallbacks.current.size);
+      // Always play audio when we receive it (session has started means we want audio)
+      setVoiceStatus('ai_speaking');
+      if (audioCallbacks.current.size > 0) {
         audioCallbacks.current.forEach((cb) => cb(event.data));
+      } else {
+        console.warn('[Session] No audio callbacks registered to play audio!');
       }
       return;
     }
@@ -149,6 +160,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
               content: message.Text,
               timestamp: new Date(),
               mode: 'voice',
+              inputMethod: 'voice',
             },
           ]);
           break;
@@ -245,6 +257,21 @@ export function SessionProvider({ children }: SessionProviderProps) {
     setVoiceStatus('idle');
   }, []);
 
+  // Start session - user explicitly begins the application
+  // Defaults to voice mode for natural conversation experience
+  const startSession = useCallback(() => {
+    console.log('[Session] startSession called, connectionStatus:', connectionStatus);
+    setSessionStarted(true);
+    setCurrentMode('voice');
+    // Ensure connection is established
+    if (connectionStatus !== 'connected') {
+      console.log('[Session] Not connected, initiating connection...');
+      connect();
+    } else {
+      console.log('[Session] Already connected, session started');
+    }
+  }, [connectionStatus, connect]);
+
   const attemptReconnect = useCallback(() => {
     if (reconnectAttempts.current >= config.reconnect.maxAttempts) {
       setConnectionStatus('error');
@@ -274,7 +301,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
       return;
     }
 
-    // Add user message to conversation
+    // Add user message to conversation with inputMethod
     setMessages((prev) => [
       ...prev,
       {
@@ -282,20 +309,33 @@ export function SessionProvider({ children }: SessionProviderProps) {
         role: 'user',
         content: text,
         timestamp: new Date(),
-        mode: currentMode,
+        mode: currentModeRef.current,
+        inputMethod: 'chat',
       },
     ]);
 
     // Send via WebSocket
     const message = JSON.stringify({ type: 'text_input', text });
     wsRef.current.send(message);
-  }, [connectionStatus, currentMode]);
+  }, [connectionStatus]);
 
   const sendAudioData = useCallback((data: ArrayBuffer) => {
     if (!wsRef.current || connectionStatus !== 'connected') {
       return;
     }
     wsRef.current.send(data);
+  }, [connectionStatus]);
+
+  // Send session start trigger - prompts AI to introduce itself
+  // This doesn't add to conversation history (AI response will be added via TranscriptDone)
+  const sendSessionStart = useCallback(() => {
+    if (!wsRef.current || connectionStatus !== 'connected') {
+      console.warn('[Session] Cannot send session_start - not connected');
+      return;
+    }
+    console.log('[Session] Sending session_start trigger');
+    const message = JSON.stringify({ type: 'session_start' });
+    wsRef.current.send(message);
   }, [connectionStatus]);
 
   // ---------------------------------------------------------------------------
@@ -347,8 +387,11 @@ export function SessionProvider({ children }: SessionProviderProps) {
     connectionStatus,
     connect,
     disconnect,
+    sessionStarted,
+    startSession,
     sendTextMessage,
     sendAudioData,
+    sendSessionStart,
     voiceStatus,
     currentMode,
     setCurrentMode,
